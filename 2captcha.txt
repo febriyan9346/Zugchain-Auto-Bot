@@ -1,0 +1,6 @@
+# Add your 2Captcha API key here
+# Get your API key from: https://2captcha.com
+# Example: your_api_key_here
+
+# Replace this line with your actual API key
+# Rename this file to 2captcha.txt
