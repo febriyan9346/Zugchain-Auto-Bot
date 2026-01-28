@@ -210,30 +210,49 @@ class ZugChainBot:
                     "websiteKey": SITE_KEY_CAPTCHA
                 }
             }
-            req = requests.post("https://api.2captcha.com/createTask", json=payload, timeout=20).json()
-            if req.get("errorId") != 0: return None
-            task_id = req.get("taskId")
-            while True:
-                time.sleep(5)
-                res = requests.post("https://api.2captcha.com/getTaskResult", json={"clientKey": api_key, "taskId": task_id}, timeout=20).json()
-                if res.get("status") == "ready": return res.get("solution", {}).get("gRecaptchaResponse")
-                if res.get("errorId") != 0: return None
-        except: return None
+            create_response = requests.post("https://api.2captcha.com/createTask", json=payload, timeout=15)
+            if create_response.status_code == 200:
+                task_id = create_response.json().get("taskId")
+                if not task_id:
+                    self.log("Failed to create captcha task", "ERROR")
+                    return None
+                
+                for _ in range(60):
+                    time.sleep(3)
+                    result_payload = {"clientKey": api_key, "taskId": task_id}
+                    result_response = requests.post("https://api.2captcha.com/getTaskResult", json=result_payload, timeout=15)
+                    if result_response.status_code == 200:
+                        result_data = result_response.json()
+                        if result_data.get("status") == "ready":
+                            solution = result_data.get("solution", {}).get("gRecaptchaResponse")
+                            if solution:
+                                self.log("Captcha solved!", "SUCCESS")
+                                return solution
+                self.log("Captcha solving timeout", "ERROR")
+                return None
+            else:
+                self.log(f"Captcha API error: {create_response.status_code}", "ERROR")
+                return None
+        except Exception as e:
+            self.log(f"Captcha error: {str(e)}", "ERROR")
+            return None
 
     def run_faucet(self, address, proxy, captcha_key):
-        self.log("Processing Faucet:", "INFO")
-        token = self.solve_2captcha(captcha_key)
-        if not token:
-            self.log("Captcha failed, skip faucet", "WARNING")
+        proxies = self.format_proxy(proxy)
+        captcha_token = self.solve_2captcha(captcha_key)
+        if not captcha_token:
+            self.log("Faucet skipped (no captcha)", "WARNING")
             return
         try:
-            res = requests.post(URL_FAUCET, json={"address": address, "recaptchaToken": token, "referralCode": None}, headers=self.get_headers("/api/faucet"), proxies=self.format_proxy(proxy), timeout=30)
-            if res.status_code == 200 and res.json().get("success"):
+            payload = {"address": address, "captchaToken": captcha_token}
+            res = requests.post(URL_FAUCET, json=payload, headers=self.get_headers("/api/faucet"), proxies=proxies, timeout=15)
+            if res.status_code == 200:
                 time_str = self.get_wib_time()
-                print(f"[{time_str}] {Fore.GREEN}[SUCCESS] Faucet Success! +{res.json().get('amount')} ZUG{Style.RESET_ALL}")
+                print(f"[{time_str}] {Fore.GREEN}[SUCCESS] Faucet claimed!{Style.RESET_ALL}")
             else:
-                self.log(f"Faucet Failed: {res.text}", "WARNING")
-        except: pass
+                self.log(f"Faucet failed: {res.status_code}", "ERROR")
+        except Exception as e:
+            self.log(f"Faucet error: {str(e)}", "ERROR")
 
     def run_stake(self, web3, private_key, address, amount_ether):
         if not web3: return 
@@ -258,7 +277,7 @@ class ZugChainBot:
             self.log(f"Stake Error: {str(e)}", "ERROR")
 
     def run_claim(self, web3, private_key, address, proxy, stake_id):
-        if not web3: return
+        if not web3: return False
         
         param_hex = hex(int(stake_id))[2:].zfill(64)
         data_payload = CLAIM_METHOD_ID + param_hex
@@ -271,7 +290,7 @@ class ZugChainBot:
             }
             web3.eth.call(call_params)
         except:
-            return
+            return False
 
         try:
             tx_hash = self.send_transaction(web3, private_key, address, STAKE_CONTRACT, 0, data_payload)
@@ -284,7 +303,9 @@ class ZugChainBot:
                         self.sync_claim(address, tx_hash, proxy)
                 except:
                     self.sync_claim(address, tx_hash, proxy)
-        except: pass
+                return True
+        except: 
+            return False
 
     def sync_claim(self, address, tx_hash, proxy):
         proxies = self.format_proxy(proxy)
@@ -431,11 +452,17 @@ class ZugChainBot:
                     self.random_delay()
 
                 if auto_claim:
-                    total_stakes = self.get_total_stakes_count(address, proxy)
-                    if total_stakes > 0:
-                        self.log(f"Processing Claim:", "INFO")
-                        for sid in range(1000):
-                            self.run_claim(self.web3, pk, address, proxy, sid)
+                    self.log(f"Processing Claim All Stakes:", "INFO")
+                    failed_count = 0
+                    for sid in range(1000):
+                        result = self.run_claim(self.web3, pk, address, proxy, sid)
+                        if result is False:
+                            failed_count += 1
+                            if failed_count >= 10:
+                                self.log(f"Stopped after 10 consecutive failed claims", "INFO")
+                                break
+                        else:
+                            failed_count = 0
 
                 profile = self.get_profile(address, proxy)
                 if profile:
