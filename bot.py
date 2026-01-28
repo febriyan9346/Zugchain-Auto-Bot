@@ -434,7 +434,7 @@ class ZugChainBot:
                     total_stakes = self.get_total_stakes_count(address, proxy)
                     if total_stakes > 0:
                         self.log(f"Processing Claim:", "INFO")
-                        for sid in range(total_stakes + 5):
+                        for sid in range(1000):
                             self.run_claim(self.web3, pk, address, proxy, sid)
 
                 profile = self.get_profile(address, proxy)
